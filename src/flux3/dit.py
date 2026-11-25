@@ -73,7 +73,13 @@ def packed_attention(q: Tensor, k: Tensor, v: Tensor, bounds: list[tuple[int, in
     """Per-sample attention over (1, H, L, D); samples never attend to each other."""
     _, heads, length, dim = q.shape
     out = torch.zeros(length, heads * dim, device=q.device, dtype=q.dtype)
-    backend = SDPBackend.CUDNN_ATTENTION if q.is_cuda else SDPBackend.MATH
+    if not q.is_cuda:
+        backend = SDPBackend.MATH
+    elif q.dtype == torch.bfloat16:
+        backend = SDPBackend.CUDNN_ATTENTION
+    else:
+        # Turing has no cuDNN attention kernel in supported PyTorch CUDA builds.
+        backend = [SDPBackend.EFFICIENT_ATTENTION, SDPBackend.MATH]
     for start, end in bounds:
         if start == end:
             continue
@@ -129,6 +135,18 @@ class LastLayer(nn.Module):
         return self.linear(layernorm_modulation(x, scale, shift))
 
 
+class _FP32OutputLinear(nn.Linear):
+    def forward(self, x: Tensor) -> Tensor:
+        if self.weight.dtype != torch.float16 or not x.is_cuda or torch.is_grad_enabled():
+            return super().forward(x)
+        # Converting an FP16 output to FP32 after the matmul cannot recover overflowed values.
+        with torch.autocast("cuda", enabled=False):
+            result = torch.mm(x.half().reshape(-1, self.in_features), self.weight.T, out_dtype=torch.float32)
+            if self.bias is not None:
+                result = result + self.bias.float()
+            return result.reshape(*x.shape[:-1], self.out_features)
+
+
 class Block(nn.Module):
     def __init__(self, hidden: int, heads: int, mlp_ratio: float):
         super().__init__()
@@ -139,7 +157,7 @@ class Block(nn.Module):
         self.v_proj = nn.Linear(hidden, hidden, bias=False)
         self.mlp_in = nn.Linear(hidden, mlp_hidden * 2, bias=False)
         self.attn_out = nn.Linear(hidden, hidden, bias=False)
-        self.mlp_out = nn.Linear(mlp_hidden, hidden, bias=False)
+        self.mlp_out = _FP32OutputLinear(mlp_hidden, hidden, bias=False)
         self.norm = QKNorm(hidden // heads)
 
     def forward(self, x: Tensor, freqs: Tensor, bounds: list[tuple[int, int]], mod: tuple[Tensor, Tensor, Tensor]) -> Tensor:
@@ -158,7 +176,7 @@ class DiT(nn.Module):
         super().__init__()
         self.flow_map = flow_map
         self.emb_in = nn.ModuleDict({m: nn.Linear(IN_CHANNELS[m], HIDDEN, bias=False) for m in ("image", "image_cond")})
-        self.txt_in = nn.Linear(IN_CHANNELS["text"], HIDDEN, bias=False)
+        self.txt_in = _FP32OutputLinear(IN_CHANNELS["text"], HIDDEN, bias=False)
         self.time_in = MLPEmbedder(256, HIDDEN)
         if flow_map:
             self.ref_time_in = MLPEmbedder(256, HIDDEN)

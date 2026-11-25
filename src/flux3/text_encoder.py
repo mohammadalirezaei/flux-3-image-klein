@@ -12,15 +12,16 @@ PAD_MULTIPLE = 80
 
 
 class TextEncoder:
-    def __init__(self, path: str, device: str = "cuda"):
-        self.model = Qwen3VLForConditionalGeneration.from_pretrained(path, torch_dtype=torch.bfloat16).to(device).eval()
+    def __init__(self, path: str, device: str = "cuda", dtype: torch.dtype = torch.bfloat16):
+        self.model = Qwen3VLForConditionalGeneration.from_pretrained(path, torch_dtype=dtype).to(device).eval()
         self.processor = AutoProcessor.from_pretrained(path)
         self.processor.tokenizer.padding_side = "right"
         self.device = device
+        self.dtype = dtype
 
     @torch.inference_mode()
     def encode(self, prompt: str) -> tuple[Tensor, Tensor]:
-        """prompt -> tokens (L, 20480) bf16 and ids (L, 4) = (0, 0, 0, position); L padded to a multiple of 80."""
+        """prompt -> tokens (L, 20480) and ids (L, 4) = (0, 0, 0, position); L padded to a multiple of 80."""
         text = self.processor.apply_chat_template(
             [{"role": "user", "content": prompt}], tokenize=False, add_generation_prompt=True
         )
@@ -38,7 +39,7 @@ class TextEncoder:
             use_cache=False,
         )
         stacked = torch.stack([output.hidden_states[k] for k in OUTPUT_LAYERS], dim=1)  # (1, 8, L, 2560)
-        tokens = stacked.permute(0, 2, 1, 3).reshape(length, -1).to(torch.bfloat16)
+        tokens = stacked.permute(0, 2, 1, 3).reshape(length, -1).to(self.dtype)
         positions = torch.arange(length, device=self.device)
         ids = torch.stack([torch.zeros_like(positions)] * 3 + [positions], dim=-1)
         return tokens, ids

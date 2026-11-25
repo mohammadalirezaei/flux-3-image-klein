@@ -3,6 +3,7 @@
 import hashlib
 import json
 
+import torch
 from PIL import Image
 
 from flux3 import bbox
@@ -18,12 +19,14 @@ class Refused(Exception):
 class Models:
     """Everything loaded once. The upsampler is loaded first: vLLM reserves its share of the GPU up front."""
 
-    def __init__(self, dits: dict[str, str], pup: str | None, pup_memory: float, offload: bool = False):
+    def __init__(self, dits: dict[str, str], pup: str | None, pup_memory: float, offload: bool = False,
+                 dtype: torch.dtype = torch.bfloat16):
         from flux3.pup import Upsampler
 
         self.upsampler = Upsampler(pup, pup_memory) if pup else None
         shared = WEIGHTS / MODELS[next(iter(dits))]["dit"]  # every weights entry ships the text encoder and autoencoder
-        self.pipeline = Pipeline(dits, str(shared / "text_encoder"), str(shared / "ae.safetensors"), offload=offload)
+        self.pipeline = Pipeline(dits, str(shared / "text_encoder"), str(shared / "ae.safetensors"),
+                                 offload=offload, dtype=dtype)
         self.safety = Safety(self.pipeline.text_encoder, str(WEIGHTS / "nsfw-classifier"), self.upsampler)
 
 

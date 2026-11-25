@@ -7,6 +7,7 @@ import argparse
 import json
 from pathlib import Path
 
+import torch
 from PIL import Image
 
 from flux3.generate import Models, Refused, generate
@@ -29,14 +30,18 @@ def main() -> None:
     parser.add_argument("--no-pup", action="store_true", help="send the prompt as typed instead of upsampling it first; only for a prompt that already is an upsampler caption")
     parser.add_argument("--pup-memory", type=float, default=0.35, help="share of the GPU reserved for the upsampler")
     quant = parser.add_mutually_exclusive_group()
+    quant.add_argument("--fp16", action="store_true", help="mixed FP16/FP32 inference with unquantized weights")
     quant.add_argument("--fp8", action="store_true", help="rowwise FP8 DiT, from <weights entry>/variants/fp8r")
     quant.add_argument("--nvfp4", action="store_true", help="NVFP4 DiT (Blackwell), from <weights entry>/variants/nvfp4")
     parser.add_argument("--dit", help=f"DiT checkpoint, instead of {WEIGHTS}/<model weights entry>")
     parser.add_argument("--safety", action="store_true", help="check the prompt, references and output; refuse if flagged")
     args = parser.parse_args()
+    if args.fp16 and not args.no_pup and not torch.cuda.is_bf16_supported(including_emulation=False):
+        parser.error("--fp16 on GPUs without native BF16 requires --no-pup and a complete caption")
 
     dit = args.dit or str(dit_path(args.model, "fp8" if args.fp8 else "nvfp4" if args.nvfp4 else ""))
-    models = Models({args.model: dit}, None if args.no_pup else str(WEIGHTS / "pup"), args.pup_memory)
+    dtype = torch.float16 if args.fp16 else torch.bfloat16
+    models = Models({args.model: dit}, None if args.no_pup else str(WEIGHTS / "pup"), args.pup_memory, dtype=dtype)
     boxes = json.loads(Path(args.boxes).read_text()) if args.boxes else None
     images = [Image.open(path) for path in args.image]
     try:

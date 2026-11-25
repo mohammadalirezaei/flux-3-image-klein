@@ -64,6 +64,8 @@ def load_checkpoint(module: nn.Module, path: str, device: str, dtype: torch.dtyp
 def _load_safetensors(module: nn.Module, file: Path, device: str, dtype: torch.dtype) -> nn.Module:
     state = load_file(str(file), device=str(device))
     quantized = swap_linears(module, state.keys())
+    if quantized is not None and dtype == torch.float16:
+        raise ValueError("Mixed FP16/FP32 inference requires an unquantized checkpoint")
     if quantized is nvfp4.NVFP4Linear and not str(device).startswith("cuda"):
         raise ValueError("NVFP4 weights need the GPU at load time; drop --offload")
     expected = module.state_dict()

@@ -40,8 +40,9 @@ class Pipeline:
     moves the one in use to the GPU."""
 
     def __init__(self, dits: dict[str, str], text_encoder: str, autoencoder: str, device: str = "cuda",
-                 offload: bool = False):
+                 offload: bool = False, dtype: torch.dtype = torch.bfloat16):
         self.device, self.offload = device, offload
+        self.dtype = dtype
         self.dits = {}
         for name, path in dits.items():
             flow_map = is_flow_map(path)
@@ -49,8 +50,8 @@ class Pipeline:
                 raise SystemExit(f"{path}: {name} expects {'a CFG' if flow_map else 'a flow-map'} checkpoint")
             with torch.device("meta"):
                 dit = DiT(flow_map)
-            self.dits[name] = load_checkpoint(dit, path, "cpu" if offload else device, torch.bfloat16)
-        self.text_encoder = TextEncoder(text_encoder, device)
+            self.dits[name] = load_checkpoint(dit, path, "cpu" if offload else device, dtype)
+        self.text_encoder = TextEncoder(text_encoder, device, dtype=dtype)
         self.autoencoder = load_checkpoint(AutoEncoder(), autoencoder, device, torch.float32)
 
     def dit(self, model: str) -> DiT:
@@ -73,12 +74,12 @@ class Pipeline:
 
         schedule = timesteps(steps, alpha)
         if dit.flow_map:
-            packed = pack([[self.text_encoder.encode(prompt), cond, image]])
-            tokens = denoise_flow_map(dit, packed, schedule)
+            packed = pack([[self.text_encoder.encode(prompt), cond, image]], dtype=self.dtype)
+            tokens = denoise_flow_map(dit, packed, schedule, dtype=self.dtype)
         else:
             text = [self.text_encoder.encode(""), self.text_encoder.encode(prompt)]
-            packed = pack([[text[0], cond, image], [text[1], cond, image]])
-            tokens = denoise(dit, packed, schedule, guidance)
+            packed = pack([[text[0], cond, image], [text[1], cond, image]], dtype=self.dtype)
+            tokens = denoise(dit, packed, schedule, guidance, dtype=self.dtype)
         return to_pil(self.autoencoder.decode(tokens, ids))
 
     def encode_references(self, references: list[Image.Image]) -> tuple[Tensor, Tensor] | None:
@@ -89,12 +90,12 @@ class Pipeline:
             t, i = self.autoencoder.encode(to_tensor(reference).to(self.device))
             i = scaled_ids(i)
             i[:, 3] = -(1 + index)  # the l axis tells references apart
-            tokens.append(t.to(torch.bfloat16))
+            tokens.append(t.to(self.dtype))
             ids.append(i)
         return torch.cat(tokens), torch.cat(ids)
 
 
-def pack(samples: list[list[tuple[Tensor, Tensor] | None]]) -> Packed:
+def pack(samples: list[list[tuple[Tensor, Tensor] | None]], *, dtype: torch.dtype = torch.bfloat16) -> Packed:
     """samples[s] = [text, image_cond or None, image], each a (tokens, ids) pair."""
     data = {m: [] for m in MODES}
     ids = {m: [] for m in MODES}
@@ -110,12 +111,12 @@ def pack(samples: list[list[tuple[Tensor, Tensor] | None]]) -> Packed:
             mode_indices[mode].append((start, counts[mode]))
     device = samples[0][0][0].device
     cat = lambda parts, width, dtype: torch.cat(parts) if parts else torch.zeros((0, width), device=device, dtype=dtype)
-    data = {m: cat(data[m], IN_CHANNELS[m], torch.bfloat16) for m in MODES}
+    data = {m: cat(data[m], IN_CHANNELS[m], dtype) for m in MODES}
     ids = {m: cat(ids[m], 4, torch.float32) for m in MODES}
     return Packed(
         data=data,
         ids=ids,
-        timesteps={m: torch.zeros(data[m].shape[0], device=device, dtype=torch.bfloat16) for m in MODES},
+        timesteps={m: torch.zeros(data[m].shape[0], device=device, dtype=dtype) for m in MODES},
         mode_indices=mode_indices,
     )
 

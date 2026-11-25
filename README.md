@@ -160,6 +160,16 @@ python scripts/cli.py "$(cat prompt.txt)" --model distilled --fp8 --no-pup --out
 
 Numbers in [Memory](#memory).
 
+### Turing GPUs
+
+Use `--fp16` on CUDA GPUs such as the Quadro RTX 8000. This mode loads the unquantized weights,
+keeps sensitive DiT projection outputs in FP32, and uses an SDPA backend that supports FP16 on Turing.
+Run the prompt upsampler on a BF16-capable device or use the external VLM prompts above, then pass the complete caption:
+
+```bash
+python scripts/cli.py "$(cat prompt.txt)" --model distilled --fp16 --no-pup --out out.png
+```
+
 ### From Python
 
 ```python

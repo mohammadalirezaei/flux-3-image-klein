@@ -12,25 +12,26 @@ def timesteps(steps: int, alpha: float) -> Tensor:
 
 
 @torch.inference_mode()
-@torch.autocast("cuda", dtype=torch.bfloat16)
-def denoise(dit: DiT, packed: Packed, schedule: Tensor, guidance: float) -> Tensor:
+def denoise(dit: DiT, packed: Packed, schedule: Tensor, guidance: float, *,
+            dtype: torch.dtype = torch.bfloat16) -> Tensor:
     """Returns the denoised image tokens of the conditional sample."""
-    for step in range(len(schedule) - 1):
-        t, dt = schedule[step].item(), (schedule[step + 1] - schedule[step]).item()
-        packed.timesteps["image"].fill_(t)
-        unconditional, conditional = dit(packed).chunk(2)
-        velocity = unconditional + guidance * (conditional - unconditional)
-        x = packed.data["image"].chunk(2)[0] + dt * velocity
-        packed.data["image"] = torch.cat((x, x))
+    with torch.autocast("cuda", dtype=dtype, enabled=dtype != torch.float32):
+        for step in range(len(schedule) - 1):
+            t, dt = schedule[step].item(), (schedule[step + 1] - schedule[step]).item()
+            packed.timesteps["image"].fill_(t)
+            unconditional, conditional = dit(packed).chunk(2)
+            velocity = unconditional + guidance * (conditional - unconditional)
+            x = packed.data["image"].chunk(2)[0] + dt * velocity
+            packed.data["image"] = torch.cat((x, x))
     return packed.data["image"].chunk(2)[0]
 
 
 @torch.inference_mode()
-@torch.autocast("cuda", dtype=torch.bfloat16)
-def denoise_flow_map(dit: DiT, packed: Packed, schedule: Tensor) -> Tensor:
-    for step in range(len(schedule) - 1):
-        t, dt = schedule[step].item(), (schedule[step + 1] - schedule[step]).item()
-        packed.timesteps["image"].fill_(t)
-        target = schedule[step + 1].reshape(1).to(packed.data["image"].device)
-        packed.data["image"] = packed.data["image"] + dt * dit(packed, timesteps_ref=target)
+def denoise_flow_map(dit: DiT, packed: Packed, schedule: Tensor, *, dtype: torch.dtype = torch.bfloat16) -> Tensor:
+    with torch.autocast("cuda", dtype=dtype, enabled=dtype != torch.float32):
+        for step in range(len(schedule) - 1):
+            t, dt = schedule[step].item(), (schedule[step + 1] - schedule[step]).item()
+            packed.timesteps["image"].fill_(t)
+            target = schedule[step + 1].reshape(1).to(packed.data["image"].device)
+            packed.data["image"] = packed.data["image"] + dt * dit(packed, timesteps_ref=target)
     return packed.data["image"]
